@@ -521,6 +521,19 @@ public class StaffModeManager {
         return resolveTool(item) != null;
     }
 
+    private boolean isStaffModeItem(ItemStack item) {
+        if (item == null || item.getType().isAir()) {
+            return false;
+        }
+        ItemMeta meta = item.getItemMeta();
+        if (meta == null) {
+            return false;
+        }
+        PersistentDataContainer data = meta.getPersistentDataContainer();
+        return data.has(toolKey(), PersistentDataType.STRING)
+                || data.has(customItemKey(), PersistentDataType.STRING);
+    }
+
     public StaffToolType resolveTool(ItemStack item) {
         if (item == null || item.getType().isAir()) {
             return null;
@@ -574,7 +587,9 @@ public class StaffModeManager {
             return;
         }
 
-        runtimeSessions.put(player.getUniqueId(), new StaffModeSession(player.getUniqueId()));
+        StaffModeSession session = new StaffModeSession(player.getUniqueId());
+        session.setToolsInitialized(true);
+        runtimeSessions.put(player.getUniqueId(), session);
         player.setGameMode(GameMode.CREATIVE);
         player.setAllowFlight(true);
         rebuildTools(player);
@@ -625,6 +640,9 @@ public class StaffModeManager {
             }
             player.setGameMode(GameMode.CREATIVE);
             player.setAllowFlight(true);
+            StaffModeSession session = runtimeSessions.computeIfAbsent(
+                    player.getUniqueId(), StaffModeSession::new);
+            session.setToolsInitialized(true);
             rebuildTools(player);
             StaffModeState state = getState(player.getUniqueId());
             if (state != null && state.isBetterViewActive()) {
@@ -893,7 +911,9 @@ public class StaffModeManager {
                 continue;
             }
 
-            runtimeSessions.put(player.getUniqueId(), new StaffModeSession(player.getUniqueId()));
+            StaffModeSession session = new StaffModeSession(player.getUniqueId());
+            session.setToolsInitialized(true);
+            runtimeSessions.put(player.getUniqueId(), session);
             player.setGameMode(GameMode.CREATIVE);
             player.setAllowFlight(true);
             rebuildTools(player);
@@ -1014,9 +1034,19 @@ public class StaffModeManager {
         }
 
         PlayerInventory inventory = player.getInventory();
+        List<ItemStack> acquiredItems = StaffModeInventoryTransfer.collect(
+                inventory.getStorageContents(),
+                inventory.getArmorContents(),
+                inventory.getItemInOffHand(),
+                player.getItemOnCursor(),
+                this::isStaffModeItem
+        );
+
         inventory.setStorageContents(snapshot.getStorageContents());
         inventory.setArmorContents(snapshot.getArmorContents());
         inventory.setItemInOffHand(snapshot.getOffhandItem());
+        player.setItemOnCursor(new ItemStack(Material.AIR));
+        mergeStaffSessionItems(player, acquiredItems, true);
         inventory.setHeldItemSlot(state.getPreviousSelectedSlot());
         player.setGameMode(state.getPreviousGameMode());
         player.setAllowFlight(state.isPreviousAllowFlight());
@@ -1231,15 +1261,108 @@ public class StaffModeManager {
                 || PermissionUtils.has(viewer, getSeeVanishedPermission()));
     }
 
+    private void mergeStaffSessionItems(Player player, List<ItemStack> items, boolean preferReturnLocation) {
+        if (player == null || items == null || items.isEmpty()) {
+            return;
+        }
+
+        Map<Integer, ItemStack> overflow = player.getInventory().addItem(
+                items.stream().map(ItemStack::clone).toArray(ItemStack[]::new));
+        if (overflow.isEmpty()) {
+            return;
+        }
+
+        Location dropLocation = player.getLocation().clone();
+        if (preferReturnLocation && !canKeepCurrentLocation(player)) {
+            Location previousLocation = previousLocations.get(player.getUniqueId());
+            if (previousLocation != null && previousLocation.getWorld() != null) {
+                dropLocation = previousLocation.clone();
+            }
+        }
+
+        if (dropLocation.getWorld() == null) {
+            dropLocation = player.getLocation().clone();
+        }
+        Location finalDropLocation = dropLocation.clone();
+        List<ItemStack> overflowItems = overflow.values().stream()
+                .filter(item -> item != null && !item.getType().isAir())
+                .map(ItemStack::clone)
+                .toList();
+        if (!overflowItems.isEmpty()) {
+            plugin.getSpigotScheduler().runRegion(finalDropLocation, () -> {
+                World dropWorld = finalDropLocation.getWorld();
+                if (dropWorld == null) {
+                    return;
+                }
+                for (ItemStack leftover : overflowItems) {
+                    dropWorld.dropItemNaturally(finalDropLocation, leftover.clone());
+                }
+            });
+        }
+        player.sendMessage(ColorUtils.toComponent(
+                getMessage("INVENTORY-OVERFLOW",
+                        "&eSome items acquired during StaffMode did not fit in your inventory and were dropped near your return location."),
+                player
+        ));
+    }
+
     private void rebuildTools(Player player) {
         if (player == null || !isInStaffMode(player.getUniqueId())) {
             return;
         }
 
         PlayerInventory inventory = player.getInventory();
-        inventory.setStorageContents(new ItemStack[36]);
-        inventory.setArmorContents(new ItemStack[4]);
-        inventory.setItemInOffHand(null);
+        StaffModeSession session = runtimeSessions.computeIfAbsent(
+                player.getUniqueId(), StaffModeSession::new);
+        List<ItemStack> displacedItems = new ArrayList<>();
+        if (!session.areToolsInitialized()) {
+            // First entry only: the real inventory is safely stored in the database snapshot.
+            inventory.setStorageContents(new ItemStack[36]);
+            inventory.setArmorContents(new ItemStack[4]);
+            inventory.setItemInOffHand(null);
+        } else {
+            // Respawn, reconnect and config reload must not erase legitimate items acquired
+            // during StaffMode. Remove only our tagged tools before rebuilding their configured slots.
+            ItemStack[] storage = inventory.getStorageContents();
+            for (int slot = 0; slot < storage.length; slot++) {
+                if (isStaffModeItem(storage[slot])) {
+                    storage[slot] = null;
+                }
+            }
+            inventory.setStorageContents(storage);
+            ItemStack[] armor = inventory.getArmorContents();
+            for (int slot = 0; slot < armor.length; slot++) {
+                if (isStaffModeItem(armor[slot])) {
+                    armor[slot] = null;
+                }
+            }
+            inventory.setArmorContents(armor);
+            if (isStaffModeItem(inventory.getItemInOffHand())) {
+                inventory.setItemInOffHand(null);
+            }
+
+            // If a legitimate item ended up in a slot reserved for a staff tool (for example,
+            // after a config reload), move it aside before the tool is placed there.
+            Set<Integer> reservedSlots = new HashSet<>();
+            for (StaffToolType toolType : TOOL_ORDER) {
+                int slot = getToolSlot(toolType);
+                if (slot >= 0 && slot < 9) {
+                    reservedSlots.add(slot);
+                }
+            }
+            for (StaffCustomItem customItem : customItems.values()) {
+                if (canUseCustomItem(player, customItem)) {
+                    reservedSlots.add(customItem.slot());
+                }
+            }
+            for (int slot : reservedSlots) {
+                ItemStack current = inventory.getItem(slot);
+                if (current != null && !current.getType().isAir() && !isStaffModeItem(current)) {
+                    displacedItems.add(current.clone());
+                    inventory.setItem(slot, null);
+                }
+            }
+        }
 
         for (StaffToolType toolType : TOOL_ORDER) {
             int slot = getToolSlot(toolType);
@@ -1256,7 +1379,11 @@ public class StaffModeManager {
             inventory.setItem(customItem.slot(), buildCustomItem(player, customItem));
         }
 
+        if (!displacedItems.isEmpty()) {
+            mergeStaffSessionItems(player, displacedItems, false);
+        }
         inventory.setHeldItemSlot(Math.max(0, Math.min(8, getToolSlot(StaffToolType.VANISH))));
+        session.setToolsInitialized(true);
         player.updateInventory();
     }
 
