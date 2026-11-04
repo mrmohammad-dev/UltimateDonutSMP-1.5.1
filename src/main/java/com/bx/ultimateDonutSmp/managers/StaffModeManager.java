@@ -1,4 +1,5 @@
 package com.bx.ultimateDonutSmp.managers;
+import com.bx.ultimateDonutSmp.staff.StaffModeInventoryTransfer;
 
 import com.bx.ultimateDonutSmp.utils.PermissionUtils;
 
