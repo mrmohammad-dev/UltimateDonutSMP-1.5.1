@@ -1,5 +1,6 @@
 package com.bx.ultimateDonutSmp.staff;
 
+import org.bukkit.Material;
 import org.bukkit.inventory.ItemStack;
 
 import java.util.ArrayList;
@@ -27,6 +28,18 @@ public final class StaffModeInventoryTransfer {
         return List.copyOf(collected);
     }
 
+    private static boolean isEmpty(ItemStack item) {
+        if (item == null || item.getAmount() <= 0) {
+            return true;
+        }
+
+        Material type = item.getType();
+        return type == Material.AIR
+                || type == Material.CAVE_AIR
+                || type == Material.VOID_AIR
+                || type.isAir();
+    }
+
     private static void append(List<ItemStack> destination,
                                ItemStack[] source,
                                Predicate<ItemStack> isStaffModeItem) {
@@ -34,7 +47,7 @@ public final class StaffModeInventoryTransfer {
             return;
         }
         for (ItemStack item : source) {
-            if (item == null || item.getType().isAir()) {
+            if (isEmpty(item)) {
                 continue;
             }
             if (isStaffModeItem != null && isStaffModeItem.test(item)) {

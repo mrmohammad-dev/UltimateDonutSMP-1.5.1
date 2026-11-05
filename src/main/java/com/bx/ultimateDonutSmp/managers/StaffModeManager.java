@@ -1,5 +1,4 @@
 package com.bx.ultimateDonutSmp.managers;
-import com.bx.ultimateDonutSmp.staff.StaffModeInventoryTransfer;
 
 import com.bx.ultimateDonutSmp.utils.PermissionUtils;
 
@@ -11,6 +10,7 @@ import com.bx.ultimateDonutSmp.models.StaffModeState;
 import com.bx.ultimateDonutSmp.staff.StaffCustomItem;
 import com.bx.ultimateDonutSmp.staff.StaffInventorySnapshot;
 import com.bx.ultimateDonutSmp.staff.StaffModeSession;
+import com.bx.ultimateDonutSmp.staff.StaffModeInventoryTransfer;
 import com.bx.ultimateDonutSmp.staff.StaffToolType;
 import com.bx.ultimateDonutSmp.utils.ColorUtils;
 import com.bx.ultimateDonutSmp.utils.ItemUtils;
@@ -979,6 +979,29 @@ public class StaffModeManager {
             return true;
         }
 
+        StaffInventorySnapshot snapshot = null;
+        List<ItemStack> acquiredItems = List.of();
+        if (restoreInventory) {
+            // Validate the saved snapshot before changing the live inventory or cursor.
+            snapshot = plugin.getDatabaseManager().loadStaffModeSnapshot(player.getUniqueId());
+            if (snapshot == null) {
+                return false;
+            }
+
+            PlayerInventory inventory = player.getInventory();
+            acquiredItems = StaffModeInventoryTransfer.collect(
+                    inventory.getStorageContents(),
+                    inventory.getArmorContents(),
+                    inventory.getItemInOffHand(),
+                    player.getItemOnCursor(),
+                    this::isStaffModeItem
+            );
+
+            // Capture the cursor before closing a container. Closing can return or clear the
+            // carried stack, so clear it only after its clone has been captured.
+            player.setItemOnCursor(new ItemStack(Material.AIR));
+        }
+
         player.closeInventory();
 
         if (state.isVanishActive()) {
@@ -992,12 +1015,7 @@ public class StaffModeManager {
 
         clearBetterView(player, state);
 
-        boolean restored = true;
-        if (restoreInventory) {
-            restored = restoreInventorySnapshot(player, state);
-        }
-
-        if (!restored) {
+        if (restoreInventory && !restoreInventorySnapshot(player, state, snapshot, acquiredItems)) {
             return false;
         }
 
@@ -1028,25 +1046,18 @@ public class StaffModeManager {
         );
     }
 
-    private boolean restoreInventorySnapshot(Player player, StaffModeState state) {
-        StaffInventorySnapshot snapshot = plugin.getDatabaseManager().loadStaffModeSnapshot(player.getUniqueId());
-        if (snapshot == null) {
+    private boolean restoreInventorySnapshot(Player player,
+                                             StaffModeState state,
+                                             StaffInventorySnapshot snapshot,
+                                             List<ItemStack> acquiredItems) {
+        if (player == null || state == null || snapshot == null) {
             return false;
         }
 
         PlayerInventory inventory = player.getInventory();
-        List<ItemStack> acquiredItems = StaffModeInventoryTransfer.collect(
-                inventory.getStorageContents(),
-                inventory.getArmorContents(),
-                inventory.getItemInOffHand(),
-                player.getItemOnCursor(),
-                this::isStaffModeItem
-        );
-
         inventory.setStorageContents(snapshot.getStorageContents());
         inventory.setArmorContents(snapshot.getArmorContents());
         inventory.setItemInOffHand(snapshot.getOffhandItem());
-        player.setItemOnCursor(new ItemStack(Material.AIR));
         mergeStaffSessionItems(player, acquiredItems, true);
         inventory.setHeldItemSlot(state.getPreviousSelectedSlot());
         player.setGameMode(state.getPreviousGameMode());
