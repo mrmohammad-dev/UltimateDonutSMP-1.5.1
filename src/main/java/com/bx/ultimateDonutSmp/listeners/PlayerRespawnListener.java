@@ -14,10 +14,11 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
+import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
 
-import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -28,7 +29,8 @@ public class PlayerRespawnListener implements Listener {
 
     private final UltimateDonutSmp plugin;
 
-    private final Map<UUID, String> pendingDeathWorlds = new HashMap<>();
+    // One token per active death. Concurrent map access is required by Folia regions.
+    private final Map<UUID, UUID> pendingRespawns = new ConcurrentHashMap<>();
 
     public PlayerRespawnListener(UltimateDonutSmp plugin) {
         this.plugin = plugin;
@@ -43,31 +45,65 @@ public class PlayerRespawnListener implements Listener {
         Player player = event.getEntity();
         UUID uuid = player.getUniqueId();
         String deathWorldName = player.getWorld() != null ? player.getWorld().getName() : null;
-        pendingDeathWorlds.put(uuid, deathWorldName);
+        UUID respawnToken = UUID.randomUUID();
+        pendingRespawns.put(uuid, respawnToken);
 
         plugin.getSpigotScheduler().runEntityLater(player, () -> {
             if (!player.isOnline()) {
-                pendingDeathWorlds.remove(uuid);
+                pendingRespawns.remove(uuid, respawnToken);
                 return;
             }
-            startFoliaRespawnCheck(player, deathWorldName, 0);
+            startFoliaRespawnCheck(player, deathWorldName, respawnToken, 0);
         }, 1L);
     }
 
-    private void startFoliaRespawnCheck(Player player, String deathWorldName, int attempts) {
+    @EventHandler
+    public void onQuit(PlayerQuitEvent event) {
+        pendingRespawns.remove(event.getPlayer().getUniqueId());
+    }
+
+    private void startFoliaRespawnCheck(Player player, String deathWorldName, UUID respawnToken, int attempts) {
+        UUID uuid = player.getUniqueId();
+        if (!respawnToken.equals(pendingRespawns.get(uuid))) {
+            // This poll belongs to an older death or the event path already handled this death.
+            return;
+        }
         if (!player.isOnline() || attempts > 120) {
-            pendingDeathWorlds.remove(player.getUniqueId());
+            pendingRespawns.remove(uuid, respawnToken);
             return;
         }
 
         if (player.getHealth() > 0.0D && !player.isDead()) {
-            pendingDeathWorlds.remove(player.getUniqueId());
-            handleRespawnLogic(player, deathWorldName, null);
+            if (!claimPendingRespawn(pendingRespawns, uuid, respawnToken)) {
+                return;
+            }
+            // The player is already at the location selected by vanilla. Do not teleport them
+            // to an older bed or run the respawn side effects a second time.
+            handleFoliaRespawnAfterPoll(player, deathWorldName);
             return;
         }
 
         plugin.getSpigotScheduler().runEntityLater(player, () ->
-                startFoliaRespawnCheck(player, deathWorldName, attempts + 1), 1L);
+                startFoliaRespawnCheck(player, deathWorldName, respawnToken, attempts + 1), 1L);
+    }
+
+    static boolean claimPendingRespawn(Map<UUID, UUID> pending, UUID playerId) {
+        return pending != null && playerId != null && pending.remove(playerId) != null;
+    }
+
+    static boolean claimPendingRespawn(Map<UUID, UUID> pending, UUID playerId, UUID expectedToken) {
+        return pending != null && playerId != null && expectedToken != null
+                && pending.remove(playerId, expectedToken);
+    }
+
+    private void handleFoliaRespawnAfterPoll(Player player, String deathWorldName) {
+        boolean isStaffMode = plugin.getStaffModeManager().isInStaffMode(player.getUniqueId());
+        NightVisionUtils.restoreIfEnabled(plugin, player);
+        if (!isStaffMode) {
+            scheduleChainmailKit(plugin, player, 0L);
+            startRespawnRtp(player, deathWorldName);
+        }
+        plugin.getStaffModeManager().handleRespawn(player);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
@@ -76,10 +112,9 @@ public class PlayerRespawnListener implements Listener {
         String deathWorldName = player.getWorld() == null ? null : player.getWorld().getName();
 
         if (plugin.getSpigotScheduler().isFolia()
-                && !pendingDeathWorlds.containsKey(player.getUniqueId())) {
+                && !claimPendingRespawn(pendingRespawns, player.getUniqueId())) {
             return;
         }
-        pendingDeathWorlds.remove(player.getUniqueId());
 
         boolean duelRespawnHandled = plugin.getDuelManager() != null
                 && plugin.getDuelManager().consumeRespawn(player, event);
@@ -134,12 +169,25 @@ public class PlayerRespawnListener implements Listener {
             isBedOrAnchor = isRespawningAtBedOrAnchor(event, player);
         }
 
-        boolean useBed = respectBed && (hasValidBed || isBedOrAnchor);
+        boolean isAnchorSpawn = event != null && event.isAnchorSpawn();
+        // The bed preference must not disable a Respawn Anchor explicitly selected by vanilla.
+        boolean useBedOrAnchor = isAnchorSpawn || (respectBed && (hasValidBed || isBedOrAnchor));
 
-        if (useBed) {
-            Location finalBed = hasValidBed
-                    ? bedLocation.clone()
-                    : (event != null ? event.getRespawnLocation().clone() : player.getLocation().clone());
+        if (useBedOrAnchor) {
+            Location eventLocation = event == null ? null : event.getRespawnLocation();
+            boolean eventSelectedBedOrAnchor = event != null
+                    && (event.isBedSpawn() || event.isAnchorSpawn());
+            boolean hasUsableEventLocation = eventLocation != null && eventLocation.getWorld() != null;
+            Location finalBed;
+            if (eventSelectedBedOrAnchor && hasUsableEventLocation) {
+                finalBed = eventLocation.clone();
+            } else if (hasValidBed) {
+                finalBed = bedLocation.clone();
+            } else if (hasUsableEventLocation) {
+                finalBed = eventLocation.clone();
+            } else {
+                finalBed = player.getLocation().clone();
+            }
 
             if (event != null) {
                 event.setRespawnLocation(finalBed);
