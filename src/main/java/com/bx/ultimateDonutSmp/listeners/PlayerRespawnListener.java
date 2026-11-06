@@ -132,9 +132,14 @@ public class PlayerRespawnListener implements Listener {
             return;
         }
 
-        Location pearlLocation = plugin.getEnderPearlManager() != null
+        Location pendingPearlLocation = plugin.getEnderPearlManager() != null
                 ? plugin.getEnderPearlManager().consumePendingTeleport(player.getUniqueId())
                 : null;
+        // A vanilla Respawn Anchor takes precedence over a delayed pearl destination.
+        // Consume and discard the stale pending pearl so it cannot affect a later death.
+        Location pearlLocation = shouldUsePendingPearlTeleport(
+                event.isAnchorSpawn(), pendingPearlLocation != null
+        ) ? pendingPearlLocation : null;
         if (pearlLocation != null) {
             Location finalPearl = pearlLocation.clone();
             event.setRespawnLocation(finalPearl);
@@ -157,7 +162,29 @@ public class PlayerRespawnListener implements Listener {
         handleRespawnLogic(player, deathWorldName, event);
     }
 
+    static boolean shouldUsePendingPearlTeleport(boolean anchorSpawn, boolean hasPendingTeleport) {
+        return hasPendingTeleport && !anchorSpawn;
+    }
+
     private void handleRespawnLogic(Player player, String deathWorldName, PlayerRespawnEvent event) {
+        if (event != null && event.isAnchorSpawn()) {
+            // Leave the PlayerRespawnEvent location untouched. Paper/Folia consumes one
+            // anchor charge after all listeners only when that location remains unchanged.
+            // Do not schedule a second teleport: vanilla already selected the safe anchor spot.
+            boolean isStaffMode = plugin.getStaffModeManager().isInStaffMode(player.getUniqueId());
+            plugin.getStaffModeManager().handleRespawn(player);
+            plugin.getSpigotScheduler().runEntityLater(player, () -> {
+                if (!player.isOnline()) {
+                    return;
+                }
+                NightVisionUtils.restoreIfEnabled(plugin, player);
+                if (!isStaffMode) {
+                    scheduleChainmailKit(plugin, player, 0L);
+                }
+            }, 1L);
+            return;
+        }
+
         boolean respectBed = plugin.getConfigManager().getConfig()
                 .getBoolean("SETTINGS.RESPAWN-ON-BED", true);
 

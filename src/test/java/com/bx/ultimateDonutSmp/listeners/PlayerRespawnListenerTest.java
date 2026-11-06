@@ -37,6 +37,17 @@ class PlayerRespawnListenerTest {
     }
 
     @Test
+    void testPendingPearlDoesNotOverrideAnchorRespawn() {
+        assertFalse(PlayerRespawnListener.shouldUsePendingPearlTeleport(true, true));
+    }
+
+    @Test
+    void testPendingPearlStillAppliesWhenVanillaDidNotChooseAnchor() {
+        assertTrue(PlayerRespawnListener.shouldUsePendingPearlTeleport(false, true));
+        assertFalse(PlayerRespawnListener.shouldUsePendingPearlTeleport(false, false));
+    }
+
+    @Test
     void testScheduleChainmailKitWithNullsDoesNotThrow() {
         assertDoesNotThrow(() -> PlayerRespawnListener.scheduleChainmailKit(null, null, 0L));
     }

@@ -65,8 +65,6 @@ public class StaffModeManager {
     private final Map<UUID, StaffModeSession> runtimeSessions = new HashMap<>();
     private final Map<UUID, Location> previousLocations = new HashMap<>();
     private final Set<UUID> restartRecoveryOnly = new HashSet<>();
-    // Once this connection enters StaffMode, keep reduced debug data until disconnect.
-    private final Set<UUID> f3RestrictedSessions = ConcurrentHashMap.newKeySet();
     private final Map<String, StaffCustomItem> customItems = new LinkedHashMap<>();
     private BukkitTask vanishActionBarTask;
     private ProtocolManager protocolManager;
@@ -618,9 +616,6 @@ public class StaffModeManager {
         if (player == null) {
             return;
         }
-
-        // F3 reduced-debug state is per connection, not a permanent player setting.
-        f3RestrictedSessions.remove(player.getUniqueId());
 
         if (!isInStaffMode(player.getUniqueId())) {
             runtimeSessions.remove(player.getUniqueId());
@@ -1751,19 +1746,12 @@ public class StaffModeManager {
     }
 
     public void updateF3Visibility(Player player) {
-        if (player == null) {
+        if (player == null || protocolManager == null) {
             return;
         }
 
-        UUID uuid = player.getUniqueId();
-        if (isInStaffMode(uuid)) {
-            f3RestrictedSessions.add(uuid);
-        }
-
-        // Do not restore full debug information after StaffMode is disabled in this
-        // connection. The restriction is cleared only when the player disconnects.
-        if (protocolManager != null) {
-            sendF3StatePacket(player, f3RestrictedSessions.contains(uuid));
-        }
+        // Match the current state exactly: status 22 while in StaffMode, status 23
+        // immediately after StaffMode ends. No player death/reconnect is required.
+        sendF3StatePacket(player, isInStaffMode(player.getUniqueId()));
     }
 }
