@@ -14,11 +14,10 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.PlayerDeathEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
-import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.PlayerInventory;
 
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -29,8 +28,7 @@ public class PlayerRespawnListener implements Listener {
 
     private final UltimateDonutSmp plugin;
 
-    // One token per active death. Concurrent map access is required by Folia regions.
-    private final Map<UUID, UUID> pendingRespawns = new ConcurrentHashMap<>();
+    private final Map<UUID, String> pendingDeathWorlds = new HashMap<>();
 
     public PlayerRespawnListener(UltimateDonutSmp plugin) {
         this.plugin = plugin;
@@ -45,65 +43,31 @@ public class PlayerRespawnListener implements Listener {
         Player player = event.getEntity();
         UUID uuid = player.getUniqueId();
         String deathWorldName = player.getWorld() != null ? player.getWorld().getName() : null;
-        UUID respawnToken = UUID.randomUUID();
-        pendingRespawns.put(uuid, respawnToken);
+        pendingDeathWorlds.put(uuid, deathWorldName);
 
         plugin.getSpigotScheduler().runEntityLater(player, () -> {
             if (!player.isOnline()) {
-                pendingRespawns.remove(uuid, respawnToken);
+                pendingDeathWorlds.remove(uuid);
                 return;
             }
-            startFoliaRespawnCheck(player, deathWorldName, respawnToken, 0);
+            startFoliaRespawnCheck(player, deathWorldName, 0);
         }, 1L);
     }
 
-    @EventHandler
-    public void onQuit(PlayerQuitEvent event) {
-        pendingRespawns.remove(event.getPlayer().getUniqueId());
-    }
-
-    private void startFoliaRespawnCheck(Player player, String deathWorldName, UUID respawnToken, int attempts) {
-        UUID uuid = player.getUniqueId();
-        if (!respawnToken.equals(pendingRespawns.get(uuid))) {
-            // This poll belongs to an older death or the event path already handled this death.
-            return;
-        }
+    private void startFoliaRespawnCheck(Player player, String deathWorldName, int attempts) {
         if (!player.isOnline() || attempts > 120) {
-            pendingRespawns.remove(uuid, respawnToken);
+            pendingDeathWorlds.remove(player.getUniqueId());
             return;
         }
 
         if (player.getHealth() > 0.0D && !player.isDead()) {
-            if (!claimPendingRespawn(pendingRespawns, uuid, respawnToken)) {
-                return;
-            }
-            // The player is already at the location selected by vanilla. Do not teleport them
-            // to an older bed or run the respawn side effects a second time.
-            handleFoliaRespawnAfterPoll(player, deathWorldName);
+            pendingDeathWorlds.remove(player.getUniqueId());
+            handleRespawnLogic(player, deathWorldName, null);
             return;
         }
 
         plugin.getSpigotScheduler().runEntityLater(player, () ->
-                startFoliaRespawnCheck(player, deathWorldName, respawnToken, attempts + 1), 1L);
-    }
-
-    static boolean claimPendingRespawn(Map<UUID, UUID> pending, UUID playerId) {
-        return pending != null && playerId != null && pending.remove(playerId) != null;
-    }
-
-    static boolean claimPendingRespawn(Map<UUID, UUID> pending, UUID playerId, UUID expectedToken) {
-        return pending != null && playerId != null && expectedToken != null
-                && pending.remove(playerId, expectedToken);
-    }
-
-    private void handleFoliaRespawnAfterPoll(Player player, String deathWorldName) {
-        boolean isStaffMode = plugin.getStaffModeManager().isInStaffMode(player.getUniqueId());
-        NightVisionUtils.restoreIfEnabled(plugin, player);
-        if (!isStaffMode) {
-            scheduleChainmailKit(plugin, player, 0L);
-            startRespawnRtp(player, deathWorldName);
-        }
-        plugin.getStaffModeManager().handleRespawn(player);
+                startFoliaRespawnCheck(player, deathWorldName, attempts + 1), 1L);
     }
 
     @EventHandler(priority = EventPriority.HIGHEST)
@@ -112,9 +76,10 @@ public class PlayerRespawnListener implements Listener {
         String deathWorldName = player.getWorld() == null ? null : player.getWorld().getName();
 
         if (plugin.getSpigotScheduler().isFolia()
-                && !claimPendingRespawn(pendingRespawns, player.getUniqueId())) {
+                && !pendingDeathWorlds.containsKey(player.getUniqueId())) {
             return;
         }
+        pendingDeathWorlds.remove(player.getUniqueId());
 
         boolean duelRespawnHandled = plugin.getDuelManager() != null
                 && plugin.getDuelManager().consumeRespawn(player, event);
@@ -132,14 +97,9 @@ public class PlayerRespawnListener implements Listener {
             return;
         }
 
-        Location pendingPearlLocation = plugin.getEnderPearlManager() != null
+        Location pearlLocation = plugin.getEnderPearlManager() != null
                 ? plugin.getEnderPearlManager().consumePendingTeleport(player.getUniqueId())
                 : null;
-        // A vanilla Respawn Anchor takes precedence over a delayed pearl destination.
-        // Consume and discard the stale pending pearl so it cannot affect a later death.
-        Location pearlLocation = shouldUsePendingPearlTeleport(
-                isRespawningAtAnchor(player, event), pendingPearlLocation != null
-        ) ? pendingPearlLocation : null;
         if (pearlLocation != null) {
             Location finalPearl = pearlLocation.clone();
             event.setRespawnLocation(finalPearl);
@@ -162,70 +122,45 @@ public class PlayerRespawnListener implements Listener {
         handleRespawnLogic(player, deathWorldName, event);
     }
 
-    static boolean shouldPreserveVanillaRespawn(boolean anchorSpawn,
-                                                boolean bedSpawn,
-                                                boolean respectBed,
-                                                boolean nearConfiguredRespawn) {
-        if (anchorSpawn) {
-            return true;
-        }
-        if (bedSpawn) {
-            return respectBed;
-        }
-        // If Folia does not expose the spawn type flag, preserve a vanilla-selected
-        // location close to the player's configured respawn point.
-        return nearConfiguredRespawn;
-    }
-
-    private boolean isRespawningAtAnchor(Player player, PlayerRespawnEvent event) {
-        if (player == null || event == null) {
-            return false;
-        }
-        if (event.isAnchorSpawn()) {
-            return true;
-        }
-        if (event.isBedSpawn()) {
-            return false;
-        }
-
-        Location respawnLocation = event.getRespawnLocation();
-        Location configuredRespawn = player.getBedSpawnLocation();
-        if (respawnLocation == null || configuredRespawn == null
-                || respawnLocation.getWorld() == null || configuredRespawn.getWorld() == null) {
-            return false;
-        }
-        return respawnLocation.getWorld().equals(configuredRespawn.getWorld())
-                && respawnLocation.distanceSquared(configuredRespawn) < 9.0D;
-    }
-
-    static boolean shouldUsePendingPearlTeleport(boolean anchorSpawn, boolean hasPendingTeleport) {
-        return hasPendingTeleport && !anchorSpawn;
-    }
-
     private void handleRespawnLogic(Player player, String deathWorldName, PlayerRespawnEvent event) {
         boolean respectBed = plugin.getConfigManager().getConfig()
                 .getBoolean("SETTINGS.RESPAWN-ON-BED", true);
-        boolean preserveVanillaRespawn = event != null
-                && shouldPreserveVanillaRespawn(
-                        event.isAnchorSpawn(), event.isBedSpawn(),
-                        respectBed, isRespawningAtBedOrAnchor(event, player)
-                );
 
-        if (preserveVanillaRespawn) {
-            // Do not replace the safe location selected by vanilla or schedule another teleport.
-            // Paper/Folia consumes the Respawn Anchor charge after listeners only if the
-            // original event location remains unchanged.
+        Location bedLocation = player.getBedSpawnLocation();
+        boolean hasValidBed = bedLocation != null && bedLocation.getWorld() != null;
+
+        boolean isBedOrAnchor = false;
+        if (event != null) {
+            isBedOrAnchor = isRespawningAtBedOrAnchor(event, player);
+        }
+
+        boolean useBed = respectBed && (hasValidBed || isBedOrAnchor);
+
+        if (useBed) {
+            Location finalBed = hasValidBed
+                    ? bedLocation.clone()
+                    : (event != null ? event.getRespawnLocation().clone() : player.getLocation().clone());
+
+            if (event != null) {
+                event.setRespawnLocation(finalBed);
+            }
+
             boolean isStaffMode = plugin.getStaffModeManager().isInStaffMode(player.getUniqueId());
-            plugin.getStaffModeManager().handleRespawn(player);
-            plugin.getSpigotScheduler().runEntityLater(player, () -> {
-                if (!player.isOnline()) {
-                    return;
-                }
-                NightVisionUtils.restoreIfEnabled(plugin, player);
-                if (!isStaffMode) {
-                    scheduleChainmailKit(plugin, player, 0L);
-                }
+
+            plugin.getSpigotScheduler().runGlobalLater(() -> {
+                if (!player.isOnline()) return;
+
+                plugin.getSpigotScheduler().teleport(player, finalBed).thenAccept(success ->
+                        plugin.getSpigotScheduler().runEntity(player, () -> {
+                            if (!player.isOnline()) return;
+                            NightVisionUtils.restoreIfEnabled(plugin, player);
+                            if (!isStaffMode) {
+                                scheduleChainmailKit(plugin, player, 0L);
+                            }
+                        }));
             }, 1L);
+
+            plugin.getStaffModeManager().handleRespawn(player);
             return;
         }
 
