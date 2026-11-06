@@ -138,7 +138,7 @@ public class PlayerRespawnListener implements Listener {
         // A vanilla Respawn Anchor takes precedence over a delayed pearl destination.
         // Consume and discard the stale pending pearl so it cannot affect a later death.
         Location pearlLocation = shouldUsePendingPearlTeleport(
-                event.isAnchorSpawn(), pendingPearlLocation != null
+                isRespawningAtAnchor(player, event), pendingPearlLocation != null
         ) ? pendingPearlLocation : null;
         if (pearlLocation != null) {
             Location finalPearl = pearlLocation.clone();
@@ -162,15 +162,64 @@ public class PlayerRespawnListener implements Listener {
         handleRespawnLogic(player, deathWorldName, event);
     }
 
+    static boolean shouldPreserveVanillaRespawn(boolean anchorSpawn,
+                                                boolean bedSpawn,
+                                                boolean missingRespawnBlock,
+                                                boolean respectBed,
+                                                boolean nearConfiguredRespawn) {
+        if (anchorSpawn) {
+            return true;
+        }
+        if (missingRespawnBlock) {
+            return false;
+        }
+        if (bedSpawn) {
+            return respectBed;
+        }
+        // When Folia fails to expose the spawn type flag, a valid vanilla-selected
+        // location close to the configured point is treated as an unflagged anchor.
+        // This fallback remains active even when bed respawning is disabled.
+        return nearConfiguredRespawn;
+    }
+
+    private boolean isRespawningAtAnchor(Player player, PlayerRespawnEvent event) {
+        if (player == null || event == null) {
+            return false;
+        }
+        if (event.isAnchorSpawn()) {
+            return true;
+        }
+        if (event.isBedSpawn() || event.isMissingRespawnBlock()) {
+            return false;
+        }
+
+        Location respawnLocation = event.getRespawnLocation();
+        Location configuredRespawn = player.getBedSpawnLocation();
+        if (respawnLocation == null || configuredRespawn == null
+                || respawnLocation.getWorld() == null || configuredRespawn.getWorld() == null) {
+            return false;
+        }
+        return respawnLocation.getWorld().equals(configuredRespawn.getWorld())
+                && respawnLocation.distanceSquared(configuredRespawn) < 9.0D;
+    }
+
     static boolean shouldUsePendingPearlTeleport(boolean anchorSpawn, boolean hasPendingTeleport) {
         return hasPendingTeleport && !anchorSpawn;
     }
 
     private void handleRespawnLogic(Player player, String deathWorldName, PlayerRespawnEvent event) {
-        if (event != null && event.isAnchorSpawn()) {
-            // Leave the PlayerRespawnEvent location untouched. Paper/Folia consumes one
-            // anchor charge after all listeners only when that location remains unchanged.
-            // Do not schedule a second teleport: vanilla already selected the safe anchor spot.
+        boolean respectBed = plugin.getConfigManager().getConfig()
+                .getBoolean("SETTINGS.RESPAWN-ON-BED", true);
+        boolean preserveVanillaRespawn = event != null
+                && shouldPreserveVanillaRespawn(
+                        event.isAnchorSpawn(), event.isBedSpawn(), event.isMissingRespawnBlock(),
+                        respectBed, isRespawningAtBedOrAnchor(event, player)
+                );
+
+        if (preserveVanillaRespawn) {
+            // Do not replace the safe location selected by vanilla or schedule another teleport.
+            // Paper/Folia consumes the Respawn Anchor charge after listeners only if the
+            // original event location remains unchanged.
             boolean isStaffMode = plugin.getStaffModeManager().isInStaffMode(player.getUniqueId());
             plugin.getStaffModeManager().handleRespawn(player);
             plugin.getSpigotScheduler().runEntityLater(player, () -> {
@@ -182,60 +231,6 @@ public class PlayerRespawnListener implements Listener {
                     scheduleChainmailKit(plugin, player, 0L);
                 }
             }, 1L);
-            return;
-        }
-
-        boolean respectBed = plugin.getConfigManager().getConfig()
-                .getBoolean("SETTINGS.RESPAWN-ON-BED", true);
-
-        Location bedLocation = player.getBedSpawnLocation();
-        boolean hasValidBed = bedLocation != null && bedLocation.getWorld() != null;
-
-        boolean isBedOrAnchor = false;
-        if (event != null) {
-            isBedOrAnchor = isRespawningAtBedOrAnchor(event, player);
-        }
-
-        boolean isAnchorSpawn = event != null && event.isAnchorSpawn();
-        // The bed preference must not disable a Respawn Anchor explicitly selected by vanilla.
-        boolean useBedOrAnchor = isAnchorSpawn || (respectBed && (hasValidBed || isBedOrAnchor));
-
-        if (useBedOrAnchor) {
-            Location eventLocation = event == null ? null : event.getRespawnLocation();
-            boolean eventSelectedBedOrAnchor = event != null
-                    && (event.isBedSpawn() || event.isAnchorSpawn());
-            boolean hasUsableEventLocation = eventLocation != null && eventLocation.getWorld() != null;
-            Location finalBed;
-            if (eventSelectedBedOrAnchor && hasUsableEventLocation) {
-                finalBed = eventLocation.clone();
-            } else if (hasValidBed) {
-                finalBed = bedLocation.clone();
-            } else if (hasUsableEventLocation) {
-                finalBed = eventLocation.clone();
-            } else {
-                finalBed = player.getLocation().clone();
-            }
-
-            if (event != null) {
-                event.setRespawnLocation(finalBed);
-            }
-
-            boolean isStaffMode = plugin.getStaffModeManager().isInStaffMode(player.getUniqueId());
-
-            plugin.getSpigotScheduler().runGlobalLater(() -> {
-                if (!player.isOnline()) return;
-
-                plugin.getSpigotScheduler().teleport(player, finalBed).thenAccept(success ->
-                        plugin.getSpigotScheduler().runEntity(player, () -> {
-                            if (!player.isOnline()) return;
-                            NightVisionUtils.restoreIfEnabled(plugin, player);
-                            if (!isStaffMode) {
-                                scheduleChainmailKit(plugin, player, 0L);
-                            }
-                        }));
-            }, 1L);
-
-            plugin.getStaffModeManager().handleRespawn(player);
             return;
         }
 
@@ -283,6 +278,9 @@ public class PlayerRespawnListener implements Listener {
     }
 
     private boolean isRespawningAtBedOrAnchor(PlayerRespawnEvent event, Player player) {
+        if (event.isMissingRespawnBlock()) {
+            return false;
+        }
         if (event.isBedSpawn() || event.isAnchorSpawn()) {
             return true;
         }
