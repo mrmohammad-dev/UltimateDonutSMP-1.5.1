@@ -164,21 +164,16 @@ public class PlayerRespawnListener implements Listener {
 
     static boolean shouldPreserveVanillaRespawn(boolean anchorSpawn,
                                                 boolean bedSpawn,
-                                                boolean missingRespawnBlock,
                                                 boolean respectBed,
                                                 boolean nearConfiguredRespawn) {
         if (anchorSpawn) {
             return true;
         }
-        if (missingRespawnBlock) {
-            return false;
-        }
         if (bedSpawn) {
             return respectBed;
         }
-        // When Folia fails to expose the spawn type flag, a valid vanilla-selected
-        // location close to the configured point is treated as an unflagged anchor.
-        // This fallback remains active even when bed respawning is disabled.
+        // If Folia does not expose the spawn type flag, preserve a vanilla-selected
+        // location close to the player's configured respawn point.
         return nearConfiguredRespawn;
     }
 
@@ -189,7 +184,7 @@ public class PlayerRespawnListener implements Listener {
         if (event.isAnchorSpawn()) {
             return true;
         }
-        if (event.isBedSpawn() || event.isMissingRespawnBlock()) {
+        if (event.isBedSpawn()) {
             return false;
         }
 
@@ -212,7 +207,7 @@ public class PlayerRespawnListener implements Listener {
                 .getBoolean("SETTINGS.RESPAWN-ON-BED", true);
         boolean preserveVanillaRespawn = event != null
                 && shouldPreserveVanillaRespawn(
-                        event.isAnchorSpawn(), event.isBedSpawn(), event.isMissingRespawnBlock(),
+                        event.isAnchorSpawn(), event.isBedSpawn(),
                         respectBed, isRespawningAtBedOrAnchor(event, player)
                 );
 
@@ -278,9 +273,6 @@ public class PlayerRespawnListener implements Listener {
     }
 
     private boolean isRespawningAtBedOrAnchor(PlayerRespawnEvent event, Player player) {
-        if (event.isMissingRespawnBlock()) {
-            return false;
-        }
         if (event.isBedSpawn() || event.isAnchorSpawn()) {
             return true;
         }

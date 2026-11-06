@@ -38,24 +38,23 @@ class PlayerRespawnListenerTest {
 
     @Test
     void testAnchorSpawnAlwaysPreservesVanillaLocation() {
-        assertTrue(PlayerRespawnListener.shouldPreserveVanillaRespawn(true, false, false, false, false));
+        assertTrue(PlayerRespawnListener.shouldPreserveVanillaRespawn(true, false, false, false));
     }
 
     @Test
     void testBedRespawnStillRespectsConfiguration() {
-        assertTrue(PlayerRespawnListener.shouldPreserveVanillaRespawn(false, true, false, true, true));
-        assertFalse(PlayerRespawnListener.shouldPreserveVanillaRespawn(false, true, false, false, true));
+        assertTrue(PlayerRespawnListener.shouldPreserveVanillaRespawn(false, true, true, true));
+        assertFalse(PlayerRespawnListener.shouldPreserveVanillaRespawn(false, true, false, true));
     }
 
     @Test
     void testUnflaggedConfiguredRespawnIsPreservedEvenWhenBedRespawnIsDisabled() {
-        assertTrue(PlayerRespawnListener.shouldPreserveVanillaRespawn(false, false, false, false, true));
+        assertTrue(PlayerRespawnListener.shouldPreserveVanillaRespawn(false, false, false, true));
     }
 
     @Test
-    void testMissingRespawnBlockIsNotPreservedByLocationFallback() {
-        assertFalse(PlayerRespawnListener.shouldPreserveVanillaRespawn(false, false, true, true, true));
-        assertFalse(PlayerRespawnListener.shouldPreserveVanillaRespawn(false, false, false, true, false));
+    void testUnmatchedSpawnUsesConfiguredServerSpawn() {
+        assertFalse(PlayerRespawnListener.shouldPreserveVanillaRespawn(false, false, true, false));
     }
 
     @Test
