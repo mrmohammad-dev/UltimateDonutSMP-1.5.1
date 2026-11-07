@@ -6,6 +6,7 @@ public final class StaffModeSession {
 
     private final UUID staffUuid;
     private UUID lastRandomTeleportTarget;
+    private boolean toolsInitialized;
 
     public StaffModeSession(UUID staffUuid) {
         this.staffUuid = staffUuid;
@@ -21,5 +22,13 @@ public final class StaffModeSession {
 
     public void setLastRandomTeleportTarget(UUID lastRandomTeleportTarget) {
         this.lastRandomTeleportTarget = lastRandomTeleportTarget;
+    }
+
+    public boolean areToolsInitialized() {
+        return toolsInitialized;
+    }
+
+    public void setToolsInitialized(boolean toolsInitialized) {
+        this.toolsInitialized = toolsInitialized;
     }
 }

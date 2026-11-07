@@ -290,6 +290,7 @@ MESSAGES:
   RANDOM-TELEPORT-SUCCESS: '&eTeleported to &f{player}&e.'
   # The text or value for Restore Failed. Available options: Any valid string text
   RESTORE-FAILED: '&cStaff mode restore failed. Contact an admin.'
+  INVENTORY-OVERFLOW: '&eSome items acquired during Staff Mode did not fit in your restored inventory and were dropped near your return location.'
   # The text or value for Recovered After Restart. Available options: Any valid string text
   RECOVERED-AFTER-RESTART: '&eStaff mode was disabled because the server restarted.
     Your inventory was restored.'
